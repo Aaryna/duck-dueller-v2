@@ -12,8 +12,10 @@ import best.spaghetcodes.duckdueller.bot.player.Movement
 import best.spaghetcodes.duckdueller.utils.*
 import net.minecraft.init.Blocks
 import net.minecraft.util.Vec3
+import net.minecraft.util.BlockPos
+import net.minecraft.util.EnumFacing
 
-class Classic : BotBase("/play duels_classic_duel"), Bow, Rod, MovePriority {
+class Classic : BotBase("/play duels_blitz_duel"), Bow, Rod, MovePriority {
 
     override fun getName(): String {
         return "Classic"
@@ -22,20 +24,29 @@ class Classic : BotBase("/play duels_classic_duel"), Bow, Rod, MovePriority {
     init {
         setStatKeys(
             mapOf(
-                "wins" to "player.stats.Duels.classic_duel_wins",
-                "losses" to "player.stats.Duels.classic_duel_losses",
-                "ws" to "player.stats.Duels.current_classic_winstreak",
+                "wins" to "player.stats.Duels.blitz_duel_wins",
+                "losses" to "player.stats.Duels.blitz_duel_losses",
+                "ws" to "player.stats.Duels.current_blitz_winstreak",
             )
         )
     }
 
     var shotsFired = 0
     var maxArrows = 5
+    var lastRodTime = 0L
+    var rodCooldown = 300L // Reduced from ~500ms to 300ms for more spam
+    var lastBlockBreakTime = 0L
+    var blockBreakCooldown = 1000L
+    var lastBlockPlaceTime = 0L
+    var blockPlaceCooldown = 800L
 
     override fun onGameStart() {
         Movement.startSprinting()
         Movement.startForward()
         TimeUtils.setTimeout(Movement::startJumping, RandomUtils.randomIntInRange(400, 1200))
+        lastRodTime = 0L
+        lastBlockBreakTime = 0L
+        lastBlockPlaceTime = 0L
     }
 
     override fun onGameEnd() {
@@ -57,7 +68,7 @@ class Classic : BotBase("/play duels_classic_duel"), Bow, Rod, MovePriority {
         if (distance < 3) {
             if (mc.thePlayer != null && mc.thePlayer.heldItem != null) {
                 val n = mc.thePlayer.heldItem.unlocalizedName.lowercase()
-                if (n.contains("rod")) { // wait after hitting with the rod
+                if (n.contains("rod")) {
                     Combat.wTap(300)
                     tapping = true
                     combo--
@@ -65,7 +76,7 @@ class Classic : BotBase("/play duels_classic_duel"), Bow, Rod, MovePriority {
                         tapping = false
                     }, 300)
                 } else if (n.contains("sword")) {
-                    Mouse.rClick(RandomUtils.randomIntInRange(80, 100)) // otherwise just blockhit
+                    Mouse.rClick(RandomUtils.randomIntInRange(80, 100))
                 }
             }
         } else {
@@ -77,6 +88,113 @@ class Classic : BotBase("/play duels_classic_duel"), Bow, Rod, MovePriority {
         }
         if (combo >= 3) {
             Movement.clearLeftRight()
+        }
+    }
+
+    // Enhanced rod spam logic
+    private fun shouldUseRod(distance: Double): Boolean {
+        val currentTime = System.currentTimeMillis()
+        if (currentTime - lastRodTime < rodCooldown) return false
+        if (Mouse.isUsingProjectile()) return false
+        if (opponent() == null) return false
+        
+        // Aggressive rod spam at expanded ranges
+        val inMainRange = distance in 3.0..11.0
+        val comboRod = combo >= 2 && distance in 2.5..8.0
+        val randomCloseRod = distance in 2.0..4.0 && RandomUtils.randomIntInRange(1, 100) <= 30
+        
+        return inMainRange || comboRod || randomCloseRod
+    }
+
+    // Block breaking logic
+    private fun tryBreakBlocksInPath(distance: Double) {
+        if (mc.thePlayer == null || mc.theWorld == null || opponent() == null) return
+        if (System.currentTimeMillis() - lastBlockBreakTime < blockBreakCooldown) return
+        if (distance < 5) return // Don't break when close
+        
+        val playerPos = mc.thePlayer.position
+        val opponentPos = opponent()!!.position
+        
+        // Check blocks in front of player
+        val frontBlock = WorldUtils.blockInFront(mc.thePlayer, 2f, 0.5f)
+        if (frontBlock != Blocks.air && frontBlock != null) {
+            // Get the block position in front
+            val lookVec = mc.thePlayer.lookVec
+            val checkPos = BlockPos(
+                playerPos.x + lookVec.xCoord * 2,
+                playerPos.y.toDouble(),
+                playerPos.z + lookVec.zCoord * 2
+            )
+            
+            val block = mc.theWorld.getBlockState(checkPos).block
+            
+            // Only break breakable blocks (not bedrock, barriers, etc)
+            if (block != Blocks.air && block != Blocks.bedrock && block != Blocks.barrier) {
+                // Switch to appropriate tool if available (pickaxe/axe)
+                val currentItem = mc.thePlayer.heldItem?.unlocalizedName?.lowercase() ?: ""
+                if (!currentItem.contains("pickaxe") && !currentItem.contains("axe")) {
+                    // Try to switch to tool
+                    Inventory.setInvItem("pickaxe") || Inventory.setInvItem("axe")
+                }
+                
+                // Start breaking
+                mc.playerController.clickBlock(checkPos, EnumFacing.UP)
+                Mouse.startLeftAC()
+                
+                TimeUtils.setTimeout({
+                    Mouse.stopLeftAC()
+                    Inventory.setInvItem("sword") // Switch back to sword
+                }, RandomUtils.randomIntInRange(100, 300))
+                
+                lastBlockBreakTime = System.currentTimeMillis()
+            }
+        }
+    }
+
+    // Block placing logic for defense
+    private fun tryPlaceDefensiveBlock(distance: Double) {
+        if (mc.thePlayer == null || mc.theWorld == null || opponent() == null) return
+        if (System.currentTimeMillis() - lastBlockPlaceTime < blockPlaceCooldown) return
+        if (distance < 10) return // Only place at range
+        
+        // Check if opponent has bow
+        val oppItem = opponent()!!.heldItem?.unlocalizedName?.lowercase() ?: ""
+        if (!oppItem.contains("bow")) return
+        
+        // Check if we have blocks
+        var hasBlocks = false
+        for (i in 0..8) {
+            val stack = mc.thePlayer.inventory.getStackInSlot(i)
+            if (stack != null) {
+                val itemName = stack.unlocalizedName.lowercase()
+                if (itemName.contains("stone") || itemName.contains("dirt") || 
+                    itemName.contains("wood") || itemName.contains("plank")) {
+                    hasBlocks = true
+                    break
+                }
+            }
+        }
+        
+        if (!hasBlocks) return
+        
+        // Switch to blocks
+        Inventory.setInvItem("stone") || Inventory.setInvItem("wood") || 
+        Inventory.setInvItem("plank") || Inventory.setInvItem("dirt")
+        
+        // Place block in front of player as defense
+        val playerPos = mc.thePlayer.position
+        val placePos = BlockPos(playerPos.x, playerPos.y, playerPos.z).offset(
+            mc.thePlayer.horizontalFacing
+        )
+        
+        if (mc.theWorld.getBlockState(placePos).block == Blocks.air) {
+            Mouse.rClick(RandomUtils.randomIntInRange(50, 100))
+            
+            TimeUtils.setTimeout({
+                Inventory.setInvItem("sword") // Switch back
+            }, 100)
+            
+            lastBlockPlaceTime = System.currentTimeMillis()
         }
     }
 
@@ -108,6 +226,12 @@ class Classic : BotBase("/play duels_classic_duel"), Bow, Rod, MovePriority {
             } else {
                 Mouse.stopLeftAC()
             }
+
+            // Block placing priority (defense against bow)
+            tryPlaceDefensiveBlock(distance)
+
+            // Block breaking (offensive)
+            tryBreakBlocksInPath(distance)
 
             if (distance > 8.8) {
                 if (opponent() != null && opponent()!!.heldItem != null && opponent()!!.heldItem.unlocalizedName.lowercase().contains("bow")) {
@@ -147,10 +271,10 @@ class Classic : BotBase("/play duels_classic_duel"), Bow, Rod, MovePriority {
                 Mouse.startLeftAC()
             }
 
-            if ((distance in 5.7..6.5 || distance in 9.0..9.5) && !EntityUtils.entityFacingAway(mc.thePlayer, opponent()!!)) {
-                if (!Mouse.isUsingProjectile()) {
-                    useRod()
-                }
+            // ENHANCED ROD SPAM - Expanded ranges and more aggressive
+            if (shouldUseRod(distance) && !EntityUtils.entityFacingAway(mc.thePlayer, opponent()!!)) {
+                useRod()
+                lastRodTime = System.currentTimeMillis()
             }
 
             if (combo >= 3 && distance >= 3.2 && mc.thePlayer.onGround) {

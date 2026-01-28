@@ -8,7 +8,7 @@ import best.spaghetcodes.duckdueller.bot.features.Rod
 import best.spaghetcodes.duckdueller.bot.player.Combat
 import best.spaghetcodes.duckdueller.bot.player.Inventory
 import best.spaghetcodes.duckdueller.bot.player.Mouse
-import best.spaghetcodes.duckdueller.bot.player.Movement
+import best.spaghetcodes.duckdueller.bot.playr.Movement
 import best.spaghetcodes.duckdueller.utils.*
 import net.minecraft.init.Blocks
 import net.minecraft.util.Vec3
